@@ -73,59 +73,6 @@ jobs:
         name: akashaProxy-arm64-${{ env.buildSha }}
         path: out/akashaProxy-arm64-${{ env.buildSha }}
 
-
-    - name: Build Clash Meta - Arm32
-      env:
-        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-      run: |
-        rm -rf ./module/bin
-        cd Clash.Meta
-        CC=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi33-clang
-        CGO_ENABLED=0 CC=${CC} GOARCH=arm GOOS=android go build -tags ${TAGS} -trimpath -ldflags "${LDFLAGS}" -o ../module/bin/clashMeta-android-armeabi-v7a
-        cd ../module/bin && tar -vcjf clashMeta-android-armeabi-v7a.tar.bz2 clashMeta-android-armeabi-v7a && rm -rf clashMeta-android-armeabi-v7a
-
-    - name: Pack Module Arm32
-      run: |
-        mkdir -p out/akashaProxy-arm32-${{ env.buildSha }}
-        cp -Rf module/* out/akashaProxy-arm32-${{ env.buildSha }}/
-        
-    - name: Upload Arm32
-      uses: actions/upload-artifact@main
-      with:
-        name: akashaProxy-arm32-${{ env.buildSha }}
-        path: out/akashaProxy-arm32-${{ env.buildSha }}
-
-    - name: Build Clash Meta - x86_64
-      env:
-        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-      run: |
-        cd Clash.Meta
-        CC=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang
-        CGO_ENABLED=0 CC=${CC} GOARCH=amd64 GOOS=linux go build -tags ${TAGS} -trimpath -ldflags "${LDFLAGS}" -o ../module/bin/clashMeta-android-x86_64
-        cd ../module/bin && tar -vcjf clashMeta-android-x86_64.tar.bz2 clashMeta-android-x86_64 && rm -rf clashMeta-android-x86_64
-
-    - name: Build Clash Meta - armAll
-      env:
-        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-      run: |
-        cd Clash.Meta
-        CC=${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android33-clang
-        CGO_ENABLED=0 CC=${CC} GOARCH=arm64 GOOS=android go build -tags ${TAGS} -trimpath -ldflags "${LDFLAGS}" -o ../module/bin/clashMeta-android-arm64-v8a
-        cd ../module/bin && tar -vcjf clashMeta-android-arm64-v8a.tar.bz2 clashMeta-android-arm64-v8a && rm -rf clashMeta-android-arm64-v8a
-
-    - name: Pack Module armAll
-      run: |
-        mkdir -p out/akashaProxy-armAll-${{ env.buildSha }}
-        cp -Rf module/* out/akashaProxy-armAll-${{ env.buildSha }}/
-        cd module && zip -r ../akashaProxy-armAll-${{ env.buildSha }}.zip *
-
-        
-    - name: Upload armAll
-      uses: actions/upload-artifact@main
-      with:
-        name: akashaProxy-armAll-${{ env.buildSha }}
-        path: out/akashaProxy-armAll-${{ env.buildSha }}
-
     - name: Find ZIP
       run: |
         echo "ZIP_FILE=$(find . -name 'akashaProxy-armAll-${{ env.buildSha }}.zip')" >> $GITHUB_ENV
