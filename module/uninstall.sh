@@ -1,5 +1,5 @@
 #!/system/bin/sh
-Clash_data_dir="/data/clash"
+Clash_data_dir="/data/adb/clash"
 
 rm_data() {
     rm -rf ${Clash_data_dir}

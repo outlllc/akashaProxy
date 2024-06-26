@@ -10,9 +10,9 @@ fi
 
 service_path=`realpath $0`
 module_dir=`dirname ${service_path}`
-data_dir="/data/clash"
+data_dir="/data/adb/clash"
 scripts_dir="${data_dir}/scripts"
-Clash_data_dir="/data/clash"
+Clash_data_dir="/data/adb/clash"
 Clash_run_path="${Clash_data_dir}/run"
 Clash_pid_file="${Clash_run_path}/clash.pid"
 if [ -f ${Clash_pid_file} ] ; then

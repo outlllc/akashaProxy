@@ -38,7 +38,7 @@ status=""
 architecture=""
 system_gid="1000"
 system_uid="1000"
-clash_data_dir="/data/clash"
+clash_data_dir="/data/adb/clash"
 modules_dir="/data/adb/modules"
 ABI=$(getprop ro.product.cpu.abi)
 mkdir -p ${clash_data_dir}/run
