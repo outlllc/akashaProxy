@@ -3,18 +3,9 @@
 [中文](./readme_zh.md) | English
 
 
-akashaProxy is a Magisk/KernelSU module derived from ~~mihomo~~clashMeta
-
-The name comes from the AkashaSystem of [clashMeta documentation](https://wiki.metacubex.one) modified
----
-
-**99% of the problems in this module basically come from the clash configuration error or the plug-in configuration error**
-
-**Please make good use of clash logs and search engines**
-
 ## Module path:
 
-**Work path: /data/clash/**
+**Work path: /data/adb/clash/**
 
 `clash.config` : Module start config
 
@@ -81,7 +72,6 @@ run `make` Compile and package the module
 ```
 make
 ```
-> The armeabi-v7a architecture and arm64-v8a architecture are built by default under the android platform.
 
 ## release
 

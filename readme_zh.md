@@ -2,22 +2,10 @@
 
 中文 | [English](./readme.md)
 
-
-akashaProxy 是 ~~mihomo~~clashMeta 衍生的Magisk/KernelSU模块
-
-名字来源于[clashMeta文档](https://wiki.metacubex.one)的虚空终端修改而来
-
-~~中文名应该叫`虚空代理`~~
-
----
-
-**此模块99%的问题基本上都来自clash配置错误或插件配置错误**
-
-**请善用搜索引擎和日志**
-
+自用修改工作路径为: /data/adb/clash/**，其余与原版相同
 ## 模块路径：
 
-**工作路径：/data/clash/**
+**工作路径：/data/adb/clash/**
 
 `clash.config` : 模块启动配置
 
@@ -67,12 +55,12 @@ https://clash-meta.wiki
 
 开始：
 ````
-/data/clash/script/clash.service -s && /data/clash/script/clash.iptables -s
+/data/adb/clash/script/clash.service -s && /data/adb/clash/script/clash.iptables -s
 ````
 
 停止：
 ````
-/data/clash/script/clash.service -k && /data/clash/script/clash.iptables -k
+/data/adb/clash/script/clash.service -k && /data/adb/clash/script/clash.iptables -k
 ````
 
 您还可以使用[dashboard](https://t.me/MagiskChangeKing)管理启停
@@ -83,7 +71,6 @@ https://clash-meta.wiki
 ````
 make
 ````
-> 默认构建android平台下armeabi-v7a架构和arm64-v8a架构
 
 ## 发布
 
