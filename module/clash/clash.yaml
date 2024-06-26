@@ -11,10 +11,7 @@ ipv6: true
 tcp-concurrent: true
 keep-alive-interval: 30
 geo-auto-update: true
-geo-update-interval: 24
-geox-url:
-  geoip: "https://jsd.onmicrosoft.cn/gh/Loyalsoldier/geoip@release/geoip.dat"
-  geosite: "https://jsd.onmicrosoft.cn/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat"
+geo-u  geosite: "https://jsd.onmicrosoft.cn/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat"
   mmdb: "https://jsd.onmicrosoft.cn/gh/Loyalsoldier/geoip@release/Country.mmdb"
 find-process-mode: strict
 global-client-fingerprint: chrome
