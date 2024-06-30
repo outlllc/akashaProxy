@@ -40,12 +40,8 @@ You can also use [dashboard](https://t.me/MagiskChangeKing) to manage startup an
 Execute `make` to compile and package the module
 ````
 make
-<<<<<<< HEAD
-```
-=======
 ````
 > The armeabi-v7a architecture and arm64-v8a architecture are built by default under the android platform
->>>>>>> upstream/master
 
 ## Publish
 
