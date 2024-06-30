@@ -1,6 +1,6 @@
 ##akashaProxy
 
-Chinese | [English](./readme.md)
+[Chinese](./readme_zh.md) | [English]
 
 
 ## Module path:
