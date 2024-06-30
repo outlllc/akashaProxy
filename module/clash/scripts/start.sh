@@ -1,6 +1,6 @@
 #!/system/bin/sh
 
-moddir="/data/adb/modules/ClashForMagisk"
+moddir="/data/adb/modules/Clash_For_Magisk"
 if [[ $(magisk -v | grep "delta") ]] && [[ $(magisk -v | grep "kitsune") ]];then
     echo "">remove
     exit 1
