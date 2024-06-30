@@ -13,8 +13,8 @@ monitor_dir=$2
 monitor_file=$3
 
 create_run() {
-    if [ ! -d "/data/clash/run" ]; then
-        mkdir -p /data/clash/run
+    if [ ! -d "/data/adb/clash/run" ]; then
+        mkdir -p /data/adb/clash/run
     fi
 }
 
