@@ -1,12 +1,10 @@
 #!/system/bin/sh
+(
 until [ $(getprop init.svc.bootanim) = "stopped" ] ; do
     sleep 5
 done
-
-if [[ $(magisk -v | grep "delta") ]] && [[ $(magisk -v | grep "kitsune") ]];then
-    echo "">remove
-    exit 1
-fi
+${scripts_dir}/start.sh
+)&
 
 service_path=`realpath $0`
 module_dir=`dirname ${service_path}`
@@ -20,5 +18,3 @@ if [ -f ${Clash_pid_file} ] ; then
 fi
 crond -c ${Clash_run_path}
 chmod -R 6755 ${Clash_data_dir}/clashkernel
-
-nohup ${scripts_dir}/clash.service -s && ${scripts_dir}/clash.iptables -s
