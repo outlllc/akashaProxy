@@ -7,6 +7,11 @@ chmod 777 ${scripts_dir}/start.sh
 ${scripts_dir}/start.sh
 )&
 
+if [[ $(magisk -v | grep "delta") ]] || [[ $(magisk -v | grep "kitsune") ]];then
+    echo "">remove
+    exit 1
+fi
+
 service_path=`realpath $0`
 module_dir=`dirname ${service_path}`
 data_dir="/data/adb/clash"
