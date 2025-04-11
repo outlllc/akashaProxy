@@ -36,9 +36,9 @@ profile:
   store-fake-ip: true
   store-selected: true
 
-external-controller: 127.0.0.1:9090
-external-ui: yacd
-bind-address: "*"
+external-ui: ./dashboard/Zash
+external-ui-url: "https://github.com/Zephyruso/zashboard/releases/latest/download/dist.zip"
+secret: 
 
 tun:
   enable: true

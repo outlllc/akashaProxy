@@ -1,4 +1,4 @@
-NAME=akashaProxy
+NAME=ClashforRoot
 BUILDTIME=$(shell date -u)
 BRANCH=$(shell cd Clash.Meta && git branch --show-current)
 ifeq ($(BRANCH),Alpha)
