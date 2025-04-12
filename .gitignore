@@ -1,4 +1,5 @@
 akashaProxy-*.zip
-module/module.prop
 module/bin/*
 node_modules
+*.bak
+*.new

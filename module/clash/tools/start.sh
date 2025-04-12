@@ -1,3 +1,3 @@
 #!/system/bin/sh
 
-/data/clash/scripts/clash.service -s && /data/clash/scripts/clash.iptables -s
+/data/adb/clash/scripts/clash.service start && /data/adb/clash/scripts/clash.iptables enable

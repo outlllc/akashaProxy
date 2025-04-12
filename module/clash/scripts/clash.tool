@@ -2,7 +2,7 @@
 
 scripts=$(realpath $0)
 scripts_dir=$(dirname ${scripts})
-. /data/clash/clash.config
+. /data/adb/clash/setting.ini
 
 monitor_local_ipv4() {
 
@@ -67,12 +67,12 @@ monitor_local_ipv4() {
 }
 
 restart_clash() {
-    ${scripts_dir}/clash.service -k && ${scripts_dir}/clash.iptables -k
-    ${scripts_dir}/clash.service -s && ${scripts_dir}/clash.iptables -s
+    ${scripts_dir}/clash.service stop && ${scripts_dir}/clash.iptables disable
+    ${scripts_dir}/clash.service start && ${scripts_dir}/clash.iptables enable
     if [ "$?" == "0" ]; then
         log "info: 内核成功重启."
     else
-        ${scripts_dir}/clash.service -k && ${scripts_dir}/clash.iptables -k
+        ${scripts_dir}/clash.service stop && ${scripts_dir}/clash.iptables disable
         log "err: 内核重启失败."
         exit 1
     fi
@@ -96,7 +96,7 @@ keep_dns() {
 
 upgrade_clash() {
     log "正在下载 ${Clash_bin_name} 内核..."
-    mkdir -p ${Clash_data_dir}/clashkernel/temp
+    mkdir -p ${Clash_data_dir}/bin/temp
     remote_clash_ver=$1
     general_clash_filename="mihomo-android-arm64-v8-"
     if [[ ${cgo} == "true" && ${go120} == "true" ]];then
@@ -109,29 +109,29 @@ upgrade_clash() {
         specific_clash_filename=${general_clash_filename}${remote_clash_ver}
     fi
     if [ ${alpha} == "true" ];then
-        curl --connect-timeout 5 -Ls -o ${Clash_data_dir}/clashkernel/temp/clashMeta.gz "${ghproxy}https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/${specific_clash_filename}.gz"
+        curl --connect-timeout 5 -Ls -o ${Clash_data_dir}/bin/temp/clashMeta.gz "${ghproxy}https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/${specific_clash_filename}.gz"
     else
-        curl --connect-timeout 5 -Ls -o ${Clash_data_dir}/clashkernel/temp/clashMeta.gz "${ghproxy}https://github.com/MetaCubeX/mihomo/releases/latest/download/${specific_clash_filename}.gz"
+        curl --connect-timeout 5 -Ls -o ${Clash_data_dir}/bin/temp/clashMeta.gz "${ghproxy}https://github.com/MetaCubeX/mihomo/releases/latest/download/${specific_clash_filename}.gz"
     fi
     unset remote_clash_ver
     unset general_clash_filename
     unset specific_clash_filename
 
-    if [ -f ${Clash_data_dir}/clashkernel/temp/clashMeta.gz ];then
-        ${busybox_path} gunzip -f ${Clash_data_dir}/clashkernel/temp/clashMeta.gz
-        if [ -f ${Clash_data_dir}/clashkernel/temp/clashMeta ];then
-            rm -f ${Clash_data_dir}/clashkernel/clashMeta
-            mv ${Clash_data_dir}/clashkernel/temp/clashMeta ${Clash_data_dir}/clashkernel/
-            rm -rf ${Clash_data_dir}/clashkernel/temp
-            chmod +x ${Clash_data_dir}/clashkernel/clashMeta
+    if [ -f ${Clash_data_dir}/bin/temp/clashMeta.gz ];then
+        ${busybox_path} gunzip -f ${Clash_data_dir}/bin/temp/clashMeta.gz
+        if [ -f ${Clash_data_dir}/bin/temp/clashMeta ];then
+            rm -f ${Clash_data_dir}/bin/clashMeta
+            mv ${Clash_data_dir}/bin/temp/clashMeta ${Clash_data_dir}/bin/mihomo
+            rm -rf ${Clash_data_dir}/bin/temp
+            chmod +x ${Clash_data_dir}/bin/mihomo
             log "info: 更新完成"
         else
-            rm -rf ${Clash_data_dir}/clashkernel/temp
+            rm -rf ${Clash_data_dir}/bin/temp
             log "err: 更新失败, 请自行前往 GitHub 项目地址下载 → https://github.com/MetaCubeX/mihomo/releases"
             return
         fi
     else
-        rm -rf ${Clash_data_dir}/clashkernel/temp
+        rm -rf ${Clash_data_dir}/bin/temp
         log "err: 更新失败, 请自行前往 GitHub 项目地址下载 → https://github.com/MetaCubeX/mihomo/releases"
         return
     fi
@@ -300,7 +300,7 @@ update_pre() {
             update_file ${GeoSite_url} ${Clash_GeoSite_file}
         fi
     fi
-    if [ ${auto_updateclashMeta} == "true" ] || [ ! -f "${Clash_bin_path}" ]; then
+    if [ ${auto_updatemihomo} == "true" ] || [ ! -f "${Clash_bin_path}" ]; then
         check_clash_ver
         flag=true
     fi

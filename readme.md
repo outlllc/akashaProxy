@@ -5,37 +5,17 @@ English | [中文](./readme_zh.md)
 
 ### Instructions for use
 
-1. Possess independent judgment/analysis ability.
-2. Know how to use Google search.
-3. Ability to read official documents.
-4. Have basic knowledge of Linux.
-5. Willing to tinker.
-
->Otherwise, we do not recommend using this module
-
 akashaProxy is a Magisk/KernelSU module derived from ~~mihomo~~clashMeta
 
-The name is modified from the void terminal of [clashMeta document](https://wiki.metacubex.one)
+**Work path: /data/adb/clash/**
 
-~~The Chinese name should be called `Void Agent`~~
-
----
-
-**99% of the problems with this module basically come from clash configuration errors or plug-in configuration errors**
-
-**Please make good use of search engines and logs**
-
-## Configuration:
-
-**Working path:/data/clash/**
-
-`clash.config` : module startup configuration
+`setting.ini` : module startup configuration
 
 `config.yaml.`:clash configuration file
 
 `packages.list` : Black/white list for proxying
 
-yacd management panel: 127.0.0.1:9090/ui (default)
+ management panel: 127.0.0.1:9090/ui (default)
 
 >Rename config.yaml.example to config.yaml and fill in the configuration file, or use your own configuration file
 
@@ -47,12 +27,12 @@ https://clash-meta.wiki
 
 start:
 ````
-/data/clash/scripts/clash.service -s && /data/clash/scripts/clash.iptables -s
+/data/adb/clash/script/cash.service start && /data/adb/clash/script/clash.iptables enable
 ````
 
 stop:
 ````
-/data/clash/scripts/clash.service -k && /data/clash/scripts/clash.iptables -k
+/data/adb/clash/script/clash.service -stop && /data/adb/clash/script/clash.iptables - disable
 ````
 
 You can also use [dashboard](https://t.me/MagiskChangeKing) to manage startup and shutdown or KernelSU webUI control
@@ -64,8 +44,3 @@ Execute `make` to compile and package the module
 make
 ````
 > The armeabi-v7a architecture and arm64-v8a architecture are built by default under the android platform
-
-## Publish
-
-[Telegram](https://t.me/akashaProxy)
-[Github workflow (requires decompression)](https://github.com/ModuleList/akashaProxy/actions)

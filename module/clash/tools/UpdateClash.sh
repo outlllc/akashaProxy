@@ -1,3 +1,3 @@
 #!/system/bin/sh
 
-/data/clash/scripts/clash.tool -u
+/data/adb/clash/scripts/clash.tool -u

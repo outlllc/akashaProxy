@@ -4,55 +4,56 @@ MIN_KSU_VERSION=11563
 MIN_KSUD_VERSION=11563
 MIN_MAGISK_VERSION=26402
 
-if [ ! $KSU ];then
-    ui_print "- Magisk ver: $MAGISK_VER"
-    if [[ $($MAGISK_VER | grep "kitsune") ]] || [[ $($MAGISK_VER | grep "delta") ]]; then
-        ui_print "*********************************************************"
-        ui_print "不支持 Magisk Delta 和 Magisk kitsune"
-        echo "">remove
-        abort "*********************************************************"
-    fi
-    
-    ui_print "- Magisk version: $MAGISK_VER_CODE"
-    if [ "$MAGISK_VER_CODE" -lt $MIN_MAGISK_VERSION ]; then
-        ui_print "*********************************************************"
-        ui_print "! 请使用 Magisk alpha 26301+"
-        abort "*********************************************************"
-    fi
-elif [ $KSU ];then
-    ui_print "- KernelSU version: $KSU_KERNEL_VER_CODE (kernel) + $KSU_VER_CODE (ksud)"
-    if ! [ "$KSU_KERNEL_VER_CODE" ] || [ "$KSU_KERNEL_VER_CODE" -lt $MIN_KSU_VERSION ] || [ "$KSU_VER_CODE" -lt $MIN_KSUD_VERSION ]; then
-        ui_print "*********************************************************"
-        ui_print "! KernelSU 版本太旧!"
-        ui_print "! 请将 KernelSU 更新到最新版本"
-        abort "*********************************************************"
-    fi
-else
-    ui_print "! 未知的模块管理器"
-    ui_print "$(set)"
-    abort
+
+# Check installation conditions
+if [ "$BOOTMODE" != true ]; then
+  abort "-----------------------------------------------------------"
+  ui_print "! Please install in Magisk/KernelSU/APatch Manager"
+  ui_print "! Install from recovery is NOT supported"
+  abort "-----------------------------------------------------------"
+elif [ "$KSU" = true ] && [ "$KSU_VER_CODE" -lt 10670 ]; then
+  abort "-----------------------------------------------------------"
+  ui_print "! Please update your KernelSU and KernelSU Manager"
+  abort "-----------------------------------------------------------"
 fi
 
+service_dir="/data/adb/service.d"
+if [ "$KSU" = "true" ]; then
+  ui_print "- KernelSU version: $KSU_VER ($KSU_VER_CODE)"
+  [ "$KSU_VER_CODE" -lt 10683 ] && service_dir="/data/adb/ksu/service.d"
+elif [ "$APATCH" = "true" ]; then
+  APATCH_VER=$(cat "/data/adb/ap/version")
+  ui_print "- APatch version: $APATCH_VER"
+else
+  ui_print "- Magisk version: $MAGISK_VER ($MAGISK_VER_CODE)"
+fi
+
+## Set up service directory and clean old installations
+#mkdir -p "${service_dir}"
+#if [ -d "/data/adb/modules/Clash_For_Magisk" ]; then
+#  rm -rf "/data/adb/modules/Clash_For_Magisk"
+#  ui_print "- Old module deleted."
+#fi
 
 system_gid="1000"
 system_uid="1000"
-clash_data_dir="/data/clash"
+clash_data_dir="/data/adb/clash"
 ABI=$(getprop ro.product.cpu.abi)
 mkdir -p ${clash_data_dir}/run
-mkdir -p ${clash_data_dir}/clashkernel
+mkdir -p ${clash_data_dir}/bin
 
-if [ ! -f ${clash_data_dir}/clashkernel/clashMeta ];then
+if [ ! -f ${clash_data_dir}/bin/mihomo ];then
     unzip -o "$ZIPFILE" 'bin/*' -d "$TMPDIR" >&2
     if [ -f "${MODPATH}/bin/clashMeta-android-${ABI}.tar.bz2" ];then
-        tar -xjf ${MODPATH}/bin/clashMeta-android-${ABI}.tar.bz2 -C ${clash_data_dir}/clashkernel/
-        mv -f ${clash_data_dir}/clashkernel/clashMeta-android-${ABI} ${clash_data_dir}/clashkernel/clashMeta
+        tar -xjf ${MODPATH}/bin/clashMeta-android-${ABI}.tar.bz2 -C ${clash_data_dir}/bin/
+        mv -f ${clash_data_dir}/bin/clashMeta-android-${ABI} ${clash_data_dir}/bin/mihomo
     else
         if [ -f "${MODPATH}/bin/clashMeta-android-default.tar.bz2" ];then
-            tar -xjf ${MODPATH}/bin/clashMeta-android-${ABI}.tar.bz2 -C ${clash_data_dir}/clashkernel/
-            mv -f ${clash_data_dir}/clashkernel/clashMeta-android-${ABI} ${clash_data_dir}/clashkernel/clashMeta
+            tar -xjf ${MODPATH}/bin/clashMeta-android-${ABI}.tar.bz2 -C ${clash_data_dir}/bin/
+            mv -f ${clash_data_dir}/bin/clashMeta-android-${ABI} ${clash_data_dir}/bin/mihomo
         else
             ui_print "未找到架构: ${ABI}"
-            abort "请使用 “make default” 为${ABI}架构编译clashMeta"
+            abort "请使用 “make default” 为${ABI}架构编译mihomo"
         fi
     fi
 fi
@@ -60,68 +61,53 @@ fi
 unzip -o "${ZIPFILE}" -x 'META-INF/*' -d ${MODPATH} >&2
 unzip -o "${ZIPFILE}" -x 'clash/*' -d ${MODPATH} >&2
 
-if [ -d "${clash_data_dir}" ];then
-    rm -rf ${MODPATH}/clash/config.yaml.example
-fi
-
 if [ -f "${clash_data_dir}/packages.list" ];then
         ui_print "- packages.list 文件已存在 跳过覆盖."
         rm -rf ${MODPATH}/clash/packages.list
 fi
 
-if [ -f "${clash_data_dir}/clash.config" ];then
-    mode=$(grep -i "^mode" ${clash_data_dir}/clash.config | awk -F '=' '{print $2}' | sed "s/\"//g")
-    oldVersion=$(grep -i "version" ${clash_data_dir}/clash.config | awk -F '=' '{print $2}' | sed "s/\"//g")
-    newVersion=$(grep -i "version" ${MODPATH}/clash/clash.config | awk -F '=' '{print $2}' | sed "s/\"//g")
+if [ -f "${clash_data_dir}/setting.ini" ];then
+    mode=$(grep -i "^mode" ${clash_data_dir}/setting.ini | awk -F '=' '{print $2}' | sed "s/\"//g")
+    oldVersion=$(grep -i "version" ${clash_data_dir}/setting.ini | awk -F '=' '{print $2}' | sed "s/\"//g")
+    newVersion=$(grep -i "version" ${MODPATH}/clash/setting.ini | awk -F '=' '{print $2}' | sed "s/\"//g")
     if [ "${oldVersion}" < "${newVersion}" ] && [ ! "${oldVersion}" == "" ];then
-        ui_print "- clash.config 文件已存在 跳过覆盖."
-        rm -rf ${MODPATH}/clash/clash.config
+        ui_print "- setting.ini 文件已存在 跳过覆盖."
+        rm -rf ${MODPATH}/clash/setting.ini
     else
-        sed -i "s/global/${mode}/g" ${MODPATH}/clash/clash.config
-        cp -Rvf ${clash_data_dir}/clash.config ${clash_data_dir}/clash.config.old
+        sed -i "s/global/${mode}/g" ${MODPATH}/clash/setting.ini
+        cp -Rf ${clash_data_dir}/setting.ini ${clash_data_dir}/setting.ini.old
     fi
 fi
 
 if [ "$(pm list packages | grep com.dashboard.kotlin)" == ""];then
     pm install -r ${MODPATH}/apk/DashBoard.apk
 fi
-
-cp -RVf ${MODPATH}/clash/* ${clash_data_dir}/
+unzip -j -o "$ZIPFILE" 'uninstall.sh' -d "$MODPATH" >&2
+unzip -j -o "$ZIPFILE" 'clash_service.sh' -d "${service_dir}" >&2
+cp -Rf ${MODPATH}/clash/* ${clash_data_dir}/
 rm -rf ${MODPATH}/clash
 rm -rf ${MODPATH}/apk
 rm -rf ${MODPATH}/bin
-rm -rf ${MODPATH}/clashkernel
+rm -rf ${MODPATH}/clash_service.sh
 
 ui_print "- 开始设置权限."
 set_perm_recursive ${MODPATH} 0 0 0770 0770
+set_perm_recursive ${service_dir}/clash_service.sh 0 0 0755 0700
 set_perm_recursive ${clash_data_dir} ${system_uid} ${system_gid} 0770 0770
 set_perm_recursive ${clash_data_dir}/scripts ${system_uid} ${system_gid} 0770 0770
 set_perm_recursive ${clash_data_dir}/mosdns ${system_uid} ${system_gid} 0770 0770
 set_perm_recursive ${clash_data_dir}/adguard ${system_uid} ${system_gid} 0770 0770
 set_perm_recursive ${clash_data_dir}/tools ${system_uid} ${system_gid} 0770 0770
-set_perm_recursive ${clash_data_dir}/clashkernel ${system_uid} ${system_gid} 6770 6770
+set_perm_recursive ${clash_data_dir}/bin ${system_uid} ${system_gid} 6770 6770
 set_perm  ${clash_data_dir}/mosdns/mosdns  ${system_uid}  ${system_gid}  6770
 set_perm  ${clash_data_dir}/adguard/AdGuardHome  ${system_uid}  ${system_gid}  6770
-set_perm  ${clash_data_dir}/clashkernel/clashMeta  ${system_uid}  ${system_gid}  6770
-set_perm  ${clash_data_dir}/clash.config ${system_uid} ${system_gid} 0770
+set_perm  ${clash_data_dir}/bin/mihomo  ${system_uid}  ${system_gid}  6770
+set_perm  ${clash_data_dir}/setting.ini ${system_uid} ${system_gid} 0770
 set_perm  ${clash_data_dir}/packages.list ${system_uid} ${system_gid} 0770
 
 
 ui_print "
 ************************************************
-使用须知:
-1. 拥有自主判断/分析能力
-2. 知道如何使用搜索引擎
-3. 拥有阅读官方文档的能力
-4. 拥有基础的Linux知识
-4. 乐于折腾
-
-> 否则不建议您使用本模块
-
-如何使用本模块清查阅→https://github.com/ModuleList/akashaProxy
-如何使用mihomo以及配置文件文档清查阅→https://wiki.metacubex.one/config
-预设配置文件在 /data/clash/config.yaml.example
-请重命名为 config.yaml 后使用DashBoard启动/停止 或者使用tools文件夹下的start.sh/stop.sh
+个人修改，与原版有差异
 ************************************************
-Telegram Channel: https://t.me/akashaProxy
 "

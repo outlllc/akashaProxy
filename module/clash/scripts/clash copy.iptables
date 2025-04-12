@@ -1,0 +1,1351 @@
+#!/system/bin/sh
+# Last updated: 2025-04-11 13:16:15 UTC
+# Author: outlllc
+# Module: Magisk Mihomo iptables rules
+
+scripts=$(realpath $0)
+scripts_dir=$(dirname ${scripts})
+. /data/adb/clash/setting.ini
+
+# 检查root权限
+if [ "$(id -u)" -ne 0 ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] This script must be run as root"
+    exit 1
+fi
+# 添加调试输出
+log "Script path: ${scripts}"
+log "Scripts directory: ${scripts_dir}"
+log "Current working directory: $(pwd)"
+
+# 优化的日志函数
+log() {
+    local level=$1
+    shift
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $*" >&2
+}
+
+# get_yaml_value() {
+#        local key=$1
+#        local default=$2
+#        busybox awk -v key="$key" '
+#            !/^ *#/ && $1 == key":" {
+#                print $2
+#                found=1
+#                exit
+#            }
+#            END {
+#                if(!found) print "'"$default"'"
+#            }
+#        ' "${Clash_config_file}" 2>/dev/null
+#    }
+#
+#    # 获取配置
+#    local clash_mode=$(get_yaml_value "mode" "rules")
+#    local clash_enhanced_mode=$(get_yaml_value "enhanced-mode" "fake-ip") 
+#    local fake_ip_range=$(get_yaml_value "fake-ip-range" "198.18.0.1/16")
+#}
+
+if [ -z "${busybox_path}" ]; then
+    for path in "/data/adb/magisk/busybox" "/system/bin/busybox" "/system/xbin/busybox"; do
+        if [ -f "$path" ]; then
+            busybox_path="$path"
+            break
+        fi
+    done
+    if [ -z "${busybox_path}" ]; then
+        busybox_path=$(which busybox 2>/dev/null)
+    fi
+    if [ -z "${busybox_path}" ]; then
+        busybox_path="/data/adb/magisk/busybox"
+    fi
+fi
+
+if [ ! -x "${busybox_path}" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] busybox not found or not executable at ${busybox_path}"
+    exit 1
+fi
+
+
+config_info() {
+    local config_file="${Clash_config_file}"
+    if [ ! -f "$config_file" ]; then
+        log "ERROR" "Config file not found: $config_file"
+        return 1
+    fi
+    clash_mode=$(${busybox_path} awk '!/^ *#/ && /mode: / { print $2;found=1; exit } END{ if(!found) print "rules" }' "$config_file")
+    clash_enhanced_mode=$(${busybox_path} awk '!/^ *#/ && /enhanced-mode: / { print $2;found=1; exit } END{ if(!found) print "fake-ip" }' "$config_file")
+    fake_ip_range=$(${busybox_path} awk '!/^ *#/ && /fake-ip-range:/ { print $2; found=1; exit } END { if (!found) print "198.18.0.1/16" }' "$config_file")
+    
+    clash_dns_port=$(${busybox_path} sed -n '/^dns:/,/^[^ ]/p' "$config_file" | ${busybox_path} grep -E '^[^#]*listen:.*:[0-9]+' | ${busybox_path} grep -Eo '[0-9]+' | ${busybox_path} tail -n 1)
+    clash_dns_port=${clash_dns_port:-1053}
+
+    log "INFO" "enhanced-mode: $clash_enhanced_mode, fake-ip-range: $fake_ip_range, listen-port: $clash_dns_port, mode: $clash_mode"
+    if [[ "${network_mode}" == @(mixed|tun) ]]; then
+        log "INFO" "tun device: ($tun_device)"
+    fi
+}
+
+# 检查是否存在 iptables 规则链
+check_chain_exists() {
+    local table=$1
+    local chain=$2
+    local ip_cmd=$3
+    $ip_cmd -t $table -L $chain >/dev/null 2>&1
+}
+
+# 网络规则管理函数
+manage_rules() {
+    local action=$1
+    case "$action" in
+        "create")
+            ip -4 rule add fwmark ${mark_id} table ${table_id} pref ${pref_id}
+            ip -4 route add local default dev lo table ${table_id}
+            if [ "${ipv6}" = "true" ]; then
+                ip -6 rule add fwmark ${mark_id} table ${table_id} pref ${pref_id}
+                ip -6 route add local default dev lo table ${table_id}
+            fi
+            ;;
+        "flush")
+            ip rule del fwmark ${mark_id} table ${table_id} 2>/dev/null || true
+            ip route flush table ${table_id} 2>/dev/null || true
+            if [ "${ipv6}" = "true" ]; then
+                ip -6 rule del fwmark ${mark_id} table ${table_id} 2>/dev/null || true
+                ip -6 route flush table ${table_id} 2>/dev/null || true
+            fi
+            ;;
+    esac
+}
+
+# iptables链创建函数
+create_chain() {
+    local table=$1 
+    local chain=$2 
+    local ipv=$3
+    local cmd="${ipv}tables_wait"
+
+    if ! check_chain_exists "$table" "$chain" "$cmd"; then
+        $cmd -t $table -N $chain 2>/dev/null
+    else
+        $cmd -t $table -F $chain
+    fi
+}
+
+# 设置 mangle 表规则链
+setup_mangle_chains() {
+    # 创建所有必要的链
+    create_chain mangle CLASH_OUT ip
+    create_chain mangle CLASH_PRE ip
+    create_chain mangle FILTER_PRE_CLASH ip
+    create_chain mangle FILTER_OUT_CLASH ip
+
+    # IPv6 链创建
+    if [ "${ipv6}" = "true" ]; then
+        create_chain mangle CLASH_OUT ip6
+        create_chain mangle CLASH_PRE ip6
+        create_chain mangle FILTER_PRE_CLASH ip6
+        create_chain mangle FILTER_OUT_CLASH ip6
+    fi
+
+    # 设置 CLASH_PRE 规则
+    for subnet in ${reserved_ip[*]}; do
+        ${iptables_wait} -t mangle -A CLASH_PRE -d ${subnet} -j ACCEPT
+    done
+
+    ${iptables_wait} -t mangle -A CLASH_PRE -p tcp -j TPROXY --on-port ${Clash_tproxy_port} --tproxy-mark ${mark_id} || log "WARN" "系统可能不支持Tproxy-TCP"
+    ${iptables_wait} -t mangle -A CLASH_PRE -p udp ! --dport 53 -j TPROXY --on-port ${Clash_tproxy_port} --tproxy-mark ${mark_id} || log "WARN" "系统可能不支持Tproxy-UDP"
+
+    # IPv6支持
+    if [ "${ipv6}" = "true" ]; then
+        for subnet in ${reserved_ip6[*]}; do
+            ${ip6tables_wait} -t mangle -A CLASH_PRE -d ${subnet} -j ACCEPT
+        done
+        ${ip6tables_wait} -t mangle -A CLASH_PRE -p tcp -j TPROXY --on-port ${Clash_tproxy_port} --tproxy-mark ${mark_id} || log "WARN" "系统可能不支持Tproxy-TCP6"
+        ${ip6tables_wait} -t mangle -A CLASH_PRE -p udp ! --dport 53 -j TPROXY --on-port ${Clash_tproxy_port} --tproxy-mark ${mark_id} || log "WARN" "系统可能不支持Tproxy-UDP6"
+    fi
+}
+
+# 设置 nat 表规则链
+setup_nat_chains() {
+    # 创建所有必要的 nat 链
+    create_chain nat DNS_PRE ip
+    create_chain nat DNS_OUT ip
+    create_chain nat FILTER_PRE_DNS ip
+    create_chain nat FILTER_OUT_DNS ip
+    
+    # IPv6 nat 链创建
+    if [ "${ipv6}" = "true" ]; then
+        create_chain nat DNS_PRE ip6
+        create_chain nat DNS_OUT ip6
+        create_chain nat FILTER_PRE_DNS ip6
+        create_chain nat FILTER_OUT_DNS ip6
+    fi
+
+    # DNS处理规则设置
+    ${iptables_wait} -t nat -A DNS_PRE -p udp -j REDIRECT --to-ports ${Clash_dns_port}
+    ${iptables_wait} -t nat -A DNS_OUT -p udp -j REDIRECT --to-ports ${Clash_dns_port}
+    
+    if [ "${ipv6}" = "true" ]; then
+        ${ip6tables_wait} -t nat -A DNS_PRE -p udp -j REDIRECT --to-ports ${Clash_dns_port}
+        ${ip6tables_wait} -t nat -A DNS_OUT -p udp -j REDIRECT --to-ports ${Clash_dns_port}
+    fi
+}
+
+# 清理规则函数 - 修改后的版本
+flush_rules() {
+    local mode=$1
+    log "INFO" "Starting cleanup for mode: ${mode}"
+    
+    if [ -z "$mode" ]; then
+        log "ERROR" "No mode specified for flush_rules"
+        return 1
+    fi
+    
+    # 清理链的函数
+    clean_chain() {
+        if [ $# -ne 3 ]; then
+            log "ERROR" "clean_chain requires 3 parameters"
+            return 1
+        fi
+        
+        local table="$1"
+        local chain="$2"
+        local ip_cmd="$3"
+        
+        if $ip_cmd -t $table -L $chain >/dev/null 2>&1; then
+            $ip_cmd -t $table -D OUTPUT -j $chain 2>/dev/null || true
+            $ip_cmd -t $table -D PREROUTING -j $chain 2>/dev/null || true
+            $ip_cmd -t $table -F $chain 2>/dev/null || true
+            $ip_cmd -t $table -X $chain 2>/dev/null || true
+            log "INFO" "Cleaned chain $chain in table $table"
+        fi
+    }
+
+    # 根据模式清理不同的规则
+    if [ "$mode" = "tproxy" ]; then
+        # 清理 TPROXY 模式特有的链
+        clean_chain mangle "CLASH_PRE" "${iptables_wait}"
+        clean_chain mangle "CLASH_OUT" "${iptables_wait}"
+        clean_chain mangle "FILTER_PRE_CLASH" "${iptables_wait}"
+        clean_chain mangle "FILTER_OUT_CLASH" "${iptables_wait}"
+        clean_chain nat "FILTER_PRE_DNS" "${iptables_wait}"
+        clean_chain nat "FILTER_OUT_DNS" "${iptables_wait}"
+        clean_chain nat "DNS_PRE" "${iptables_wait}"
+        clean_chain nat "DNS_OUT" "${iptables_wait}"
+
+    if [ "${ipv6}" = "true" ]; then
+         clean_chain mangle "CLASH_PRE" "${ip6tables_wait}"
+         clean_chain mangle "CLASH_OUT" "${ip6tables_wait}"
+         clean_chain mangle "FILTER_PRE_CLASH" "${ip6tables_wait}"
+         clean_chain mangle "FILTER_OUT_CLASH" "${ip6tables_wait}"
+         clean_chain nat "FILTER_PRE_DNS" "${ip6tables_wait}"
+         clean_chain nat "FILTER_OUT_DNS" "${ip6tables_wait}"
+         clean_chain nat "DNS_PRE" "${ip6tables_wait}"
+         clean_chain nat "DNS_OUT" "${ip6tables_wait}"
+    fi
+
+        # 清理路由表
+        manage_rules flush
+        
+    elif [ "$mode" = "tun" ]; then
+        # 检查 TUN 设备名称
+        if [ -z "${tun_device}" ]; then
+            log "ERROR" "TUN device name is not set"
+            return 1
+        fi
+        
+        # 清理 TUN 模式特有的链
+        clean_chain mangle "CLASH_OUT" "${iptables_wait}"
+        clean_chain mangle "CLASH_PRE" "${iptables_wait}"
+
+        # 检查并清理 FORWARD 规则
+        if ${iptables_wait} -C FORWARD -o ${tun_device} -j ACCEPT 2>/dev/null; then
+            ${iptables_wait} -D FORWARD -o ${tun_device} -j ACCEPT
+        fi
+
+        if ${iptables_wait} -C FORWARD -i ${tun_device} -j ACCEPT 2>/dev/null; then
+            ${iptables_wait} -D FORWARD -i ${tun_device} -j ACCEPT
+        fi
+
+        # 清理 TUN 路由规则
+        ip rule del fwmark ${mark_id} lookup ${table_id} 2>/dev/null || true
+        ip route del default dev ${tun_device} table ${table_id} 2>/dev/null || true
+
+        if [ "${ipv6}" = "true" ]; then
+            clean_chain mangle "CLASH_OUT" "${ip6tables_wait}"
+            clean_chain mangle "CLASH_PRE" "${ip6tables_wait}"
+
+            if ${ip6tables_wait} -C FORWARD -o ${tun_device} -j ACCEPT 2>/dev/null; then
+                ${ip6tables_wait} -D FORWARD -o ${tun_device} -j ACCEPT
+            fi
+
+            if ${ip6tables_wait} -C FORWARD -i ${tun_device} -j ACCEPT 2>/dev/null; then
+                ${ip6tables_wait} -D FORWARD -i ${tun_device} -j ACCEPT
+            fi
+            
+            ip -6 rule del fwmark ${mark_id} lookup ${table_id} 2>/dev/null || true
+            ip -6 route del default dev ${tun_device} table ${table_id} 2>/dev/null || true
+        fi
+    fi
+    
+    log "INFO" "Cleanup completed for mode: ${mode}"
+}
+
+# 应用规则函数
+apply_rules() {
+    # 1. 设置各个表的规则链
+    setup_mangle_chains
+    setup_nat_chains
+
+    # 2. 配置过滤规则
+    ${iptables_wait} -t mangle -A FILTER_PRE_CLASH -j CLASH_PRE
+    ${scripts_dir}/clash.tool -f
+    
+    if [ "${Clash_enhanced_mode}" = "fake-ip" ]; then
+        mode="blacklist"
+    fi
+    
+    local apps=$(cat ${appuid_file} | sort -u)
+    if [ "${mode}" = "global" ]; then
+        mode="blacklist"
+        apps=""
+    fi
+
+    # 3. 应用过滤规则
+    if [ "${mode}" = "blacklist" ]; then
+        for appuid in ${apps}; do
+            ${iptables_wait} -t mangle -A FILTER_OUT_CLASH -m owner --uid-owner ${appuid} -j ACCEPT
+        done
+        ${iptables_wait} -t mangle -A FILTER_OUT_CLASH -m owner ! --gid-owner ${Clash_group} -j CLASH_OUT
+    elif [ "${mode}" = "whitelist" ]; then
+        for appuid in ${apps}; do
+            ${iptables_wait} -t mangle -A FILTER_OUT_CLASH -m owner --uid-owner ${appuid} -j CLASH_OUT
+        done
+    fi
+
+    # 4. IPv6 支持
+    if [ "${ipv6}" = "true" ]; then
+        # IPv6 mangle 规则
+        for subnet in ${reserved_ip6[*]}; do
+            ${ip6tables_wait} -t mangle -A CLASH_PRE -d ${subnet} -j ACCEPT
+        done
+        ${ip6tables_wait} -t mangle -A CLASH_PRE -p tcp -j TPROXY --on-port ${Clash_tproxy_port} --tproxy-mark ${mark_id} || log "WARN" "系统可能不支持Tproxy-TCP6"
+        ${ip6tables_wait} -t mangle -A CLASH_PRE -p udp ! --dport 53 -j TPROXY --on-port ${Clash_tproxy_port} --tproxy-mark ${mark_id} || log "WARN" "系统可能不支持Tproxy-UDP6"
+
+        # IPv6 NAT 规则
+        ${ip6tables_wait} -t nat -A DNS_PRE -p udp -j REDIRECT --to-ports ${Clash_dns_port}
+        ${ip6tables_wait} -t nat -A DNS_OUT -p udp -j REDIRECT --to-ports ${Clash_dns_port}
+
+        # IPv6 应用过滤规则
+        ${ip6tables_wait} -t mangle -A FILTER_PRE_CLASH -j CLASH_PRE
+        if [ "${mode}" = "blacklist" ]; then
+            for appuid in ${apps}; do
+                ${ip6tables_wait} -t mangle -A FILTER_OUT_CLASH -m owner --uid-owner ${appuid} -j ACCEPT
+            done
+            ${ip6tables_wait} -t mangle -A FILTER_OUT_CLASH -m owner ! --gid-owner ${Clash_group} -j CLASH_OUT
+        elif [ "${mode}" = "whitelist" ]; then
+            for appuid in ${apps}; do
+                ${ip6tables_wait} -t mangle -A FILTER_OUT_CLASH -m owner --uid-owner ${appuid} -j CLASH_OUT
+            done
+        fi
+    fi
+
+    # 5. 应用主规则
+    ${iptables_wait} -t mangle -A PREROUTING -j FILTER_PRE_CLASH
+    ${iptables_wait} -t mangle -A OUTPUT -j FILTER_OUT_CLASH
+    ${iptables_wait} -t nat -A PREROUTING -j FILTER_PRE_DNS
+    ${iptables_wait} -t nat -A OUTPUT -j FILTER_OUT_DNS
+
+    if [ "${ipv6}" = "true" ]; then
+        ${ip6tables_wait} -t mangle -A PREROUTING -j FILTER_PRE_CLASH
+        ${ip6tables_wait} -t mangle -A OUTPUT -j FILTER_OUT_CLASH
+        ${ip6tables_wait} -t nat -A PREROUTING -j FILTER_PRE_DNS
+        ${ip6tables_wait} -t nat -A OUTPUT -j FILTER_OUT_DNS
+    fi
+
+    ${scripts_dir}/clash.tool -m
+}
+
+# TUN模式相关函数
+set_tun() {
+    log "INFO" "配置 TUN 设备和规则..."
+    # 配置 IPv4 路由
+    ip -4 rule add fwmark ${mark_id} table ${table_id} pref ${pref_id}
+    while [ "$(ip -4 route show table ${table_id} 2>/dev/null)" == "" ]; do
+        ip -4 route add default dev ${tun_device} table ${table_id}
+    done
+
+    # 配置转发规则
+    ${iptables_wait} -I FORWARD -o ${tun_device} -j ACCEPT
+    ${iptables_wait} -I FORWARD -i ${tun_device} -j ACCEPT
+
+    if [ "${ipv6}" = "true" ]; then
+        log "INFO" "配置 IPv6 TUN 规则..."
+        ip -6 rule add fwmark ${mark_id} table ${table_id} pref ${pref_id}
+        while [ "$(ip -6 route show table ${table_id} 2>/dev/null)" == "" ]; do
+            ip -6 route add default dev ${tun_device} table ${table_id}
+        done
+
+        ${ip6tables_wait} -I FORWARD -o ${tun_device} -j ACCEPT
+        ${ip6tables_wait} -I FORWARD -i ${tun_device} -j ACCEPT
+    fi
+
+    setup_tun_rules
+}
+
+# 设置 TUN 规则
+setup_tun_rules() {
+    create_chain mangle CLASH_PRE ip
+    for subnet in ${reserved_ip[*]}; do
+        ${iptables_wait} -t mangle -A CLASH_PRE -d ${subnet} -j RETURN
+    done
+
+    ${iptables_wait} -t mangle -A CLASH_PRE -j MARK --set-xmark ${mark_id}
+    ${iptables_wait} -t mangle -A PREROUTING -j CLASH_PRE
+
+    create_chain mangle CLASH_OUT ip
+    ${iptables_wait} -t mangle -A CLASH_OUT -m owner --uid-owner ${Clash_user} --gid-owner ${Clash_group} -j RETURN
+
+    if [ "${ipv6}" = "true" ]; then
+        create_chain mangle CLASH_PRE ip6
+        for subnet in ${reserved_ip6[*]}; do
+            ${ip6tables_wait} -t mangle -A CLASH_PRE -d ${subnet} -j RETURN
+        done
+
+        ${ip6tables_wait} -t mangle -A CLASH_PRE -j MARK --set-xmark ${mark_id}
+        ${ip6tables_wait} -t mangle -A PREROUTING -j CLASH_PRE
+
+        create_chain mangle CLASH_OUT ip6
+        ${ip6tables_wait} -t mangle -A CLASH_OUT -m owner --uid-owner ${Clash_user} --gid-owner ${Clash_group} -j RETURN
+    fi
+
+    setup_tun_mode_apps
+}
+
+# 设置 TUN 模式应用规则
+setup_tun_mode_apps() {
+    ${scripts_dir}/clash.tool -f
+    local apps=$(${busybox_path} cat ${appuid_file} | ${busybox_path} sort -u)
+    if [ "${mode}" = "global" ]; then
+        mode="blacklist"
+        apps=""
+    fi
+
+    if [ "${mode}" = "blacklist" ]; then
+        for appuid in ${apps}; do
+            ${iptables_wait} -t mangle -A CLASH_OUT -m owner --uid-owner ${appuid} -j RETURN
+        done
+        ${iptables_wait} -t mangle -A CLASH_OUT -j MARK --set-xmark ${mark_id}
+        
+        if [ "${ipv6}" = "true" ]; then
+            for appuid in ${apps}; do
+                ${ip6tables_wait} -t mangle -A CLASH_OUT -m owner --uid-owner ${appuid} -j RETURN
+            done
+            ${ip6tables_wait} -t mangle -A CLASH_OUT -j MARK --set-xmark ${mark_id}
+        fi
+    elif [ "${mode}" = "whitelist" ]; then
+        for appuid in ${apps}; do
+            ${iptables_wait} -t mangle -A CLASH_OUT -m owner --uid-owner ${appuid} -j MARK --set-xmark ${mark_id}
+        done
+        
+        if [ "${ipv6}" = "true" ]; then
+            for appuid in ${apps}; do
+                ${ip6tables_wait} -t mangle -A CLASH_OUT -m owner --uid-owner ${appuid} -j MARK --set-xmark ${mark_id}
+            done
+        fi
+    fi
+
+    ${iptables_wait} -t mangle -A OUTPUT -j CLASH_OUT
+    if [ "${ipv6}" = "true" ]; then
+        ${ip6tables_wait} -t mangle -A OUTPUT -j CLASH_OUT
+    fi
+}
+
+# 混合模式处理
+handle_mixed_mode() {
+    log "INFO" "配置混合模式..."
+    if [ "${Clash_auto_route}" = "true" ]; then
+        ${iptables_wait} -I FORWARD -o ${tun_device} -j ACCEPT
+        ${iptables_wait} -I FORWARD -i ${tun_device} -j ACCEPT
+        if [ "${ipv6}" = "true" ]; then
+            ${ip6tables_wait} -I FORWARD -o ${tun_device} -j ACCEPT
+            ${ip6tables_wait} -I FORWARD -i ${tun_device} -j ACCEPT
+        fi
+        log "INFO" "auto_route已开启"
+        return 0
+    fi
+    
+    if manage_rules create; then
+        apply_rules
+        set_tun
+    fi
+}
+
+# 处理禁用操作
+handle_disable() {
+    if [ "${mode}" = "socks" ]; then
+        exit 0
+    fi
+    
+    if [[ "${mode}" == @(blacklist|whitelist|global) ]]; then
+        if [ "${network_mode}" = "tun" ]; then
+            log "INFO" "正在清理 TUN 模式规则..."
+            flush_rules "tun"
+        elif [ "${network_mode}" = "tproxy" ]; then
+            log "INFO" "正在清理 TPROXY 模式规则..."
+            flush_rules "tproxy"
+        elif [ "${network_mode}" = "mixed" ]; then
+            log "INFO" "正在清理mixed模式规则..."
+            flush_rules "tun"
+            flush_rules "tproxy"
+        elif [ "${network_mode}" = "redirect" ]; then
+            log "INFO" "正在清理redirect模式规则..."
+            disable_service
+        elif [ "${network_mode}" = "enhance" ]; then
+            log "INFO" "正在清理enhance模式规则..."
+            disable_service
+            log "info 完成"
+        fi
+        log "INFO" "iptables规则已清空"
+    fi
+}
+
+# 显示用法信息
+show_usage() {
+    echo "${red}$0 $1 not found${normal}"
+    echo "${yellow}Usage:${normal} ${green}$0${normal} {${yellow}enable|disable|renew${normal}}"
+}
+
+
+
+
+
+
+fwmark="16777216/16777216"
+table="2024"
+pref="100"
+# disable or enable QUIC using iptables rules. Note that this may cause some websites to become inaccessible.
+quic="enable"
+tun_forward="enable"
+clash_dns_forward="enable"
+fake_ip_range=""
+
+
+va1=$(getprop ro.build.version.release)
+va2="11"
+if [ "$va1" -ge "$va2" ]; then
+  IPV="iptables -w 100"
+  IP6V="ip6tables -w 100"
+else
+  IPV="iptables"
+  IP6V="ip6tables"
+fi
+
+disable_service(){
+    local mode=$1
+    log "enter disable_service for mode: $mode"
+      ipv6_enable
+    probe_user_group || log Error "Failed to check BOX user group. Please ensure ${bin_name} kernel is started."
+    log Warning "Cleaning up iptables transparent proxy rules."
+    cleanup_iptables
+    log Warning "Cleaning up iptables transparent proxy rules done."
+}
+
+enhance_network_mode() {
+    log "Info" "Using Enhance: tcp(redirect) + udp(tproxy)"
+    log "Info" "Creating iptables transparent proxy rules."
+
+    # 检查必需的变量
+    : "${tproxy_port:=7893}"  # 为tproxy端口设置默认值
+    : "${redir_port:=7892}"   # 为redirect端口设置默认值
+    
+    # 检查变量是否为空
+    if [ -z "$tproxy_port" ] || [ -z "$redir_port" ]; then
+        log "Error" "Required ports not set: tproxy_port=$tproxy_port, redir_port=$redir_port"
+        return 1
+    fi
+
+    # 先设置IPv4规则
+    iptables="$IPV"
+    if start_redirect; then
+        log "Info" "IPv4 redirect rules created successfully"
+        if start_tproxy; then
+            log "Info" "IPv4 tproxy rules created successfully"
+    else
+            log "Error" "Failed to create IPv4 tproxy rules"
+            stop_redirect >/dev/null 2>&1
+            return 1
+        fi
+    else
+        log "Error" "Failed to create IPv4 redirect rules"
+        return 1
+    fi
+
+    # 处理IPv6（如果启用）
+    if [ "${ipv6}" = "true" ]; then
+        log "Debug" "Using IPv6"
+      ipv6_enable
+      iptables="$IP6V"
+      if start_redirect; then
+            log "Info" "IPv6 redirect rules created successfully"
+            if start_tproxy; then
+                log "Info" "IPv6 tproxy rules created successfully"
+      else
+                log "Error" "Failed to create IPv6 tproxy rules"
+                stop_redirect >/dev/null 2>&1
+                return 1
+            fi
+        else
+            log "Error" "Failed to create IPv6 redirect rules"
+            return 1
+      fi
+    else
+      disable_ipv6
+        log "Warning" "Disabling IPv6"
+    fi
+
+    log "Info" "All iptables rules created successfully"
+    return 0
+}
+
+
+start_redirect() {
+    log "DEBUG" "Starting redirect setup"
+    
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -t nat -N BOX_EXTERNAL
+    ${iptables} -t nat -F BOX_EXTERNAL
+    ${iptables} -t nat -N BOX_LOCAL
+    ${iptables} -t nat -F BOX_LOCAL
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    if [ "${Clash_bin_name}" = "mihomo" ]; then
+      ${iptables} -t nat -A BOX_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports "${clash_dns_port}"
+      ${iptables} -t nat -A BOX_LOCAL -p udp --dport 53 -j REDIRECT --to-ports "${clash_dns_port}"
+        fi
+
+    ${iptables} -t nat -N LOCAL_IP_V4
+    ${iptables} -t nat -F LOCAL_IP_V4
+    
+        # 修正 intranet 数组的使用
+        if [ -n "${intranet}" ]; then
+            for subnet in ${intranet}; do
+                if [ -n "${subnet}" ]; then
+      ${iptables} -t nat -A BOX_EXTERNAL -d ${subnet} -j RETURN
+      ${iptables} -t nat -A BOX_LOCAL -d ${subnet} -j RETURN
+                fi
+    done
+        fi
+    
+    ${iptables} -t nat -A BOX_EXTERNAL -j LOCAL_IP_V4
+    ${iptables} -t nat -A BOX_LOCAL -j LOCAL_IP_V4
+
+    ${iptables} -t nat -A BOX_EXTERNAL -p tcp -i lo -j REDIRECT --to-ports "${redir_port}"
+
+        # 修正 ap_list 数组的使用
+        if [ -n "${ap_list}" ]; then
+            for ap in ${ap_list}; do
+                if [ -n "${ap}" ]; then
+        ${iptables} -t nat -A BOX_EXTERNAL -p tcp -i "${ap}" -j REDIRECT --to-ports "${redir_port}"
+                fi
+      done
+            [ ${network_mode} = "enhance" ] || log "Info" "${ap_list} transparent proxy."
+    fi
+
+    ${iptables} -t nat -I PREROUTING -j BOX_EXTERNAL
+    ${iptables} -t nat -I BOX_LOCAL -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -j RETURN
+
+        # 修正 ignore_out_list 数组的使用
+        if [ -n "${ignore_out_list}" ]; then
+            for ignore in ${ignore_out_list}; do
+                if [ -n "${ignore}" ]; then
+        ${iptables} -t nat -A BOX_LOCAL -o "${ignore}" -j RETURN
+                fi
+      done
+            [ ${network_mode} = "enhance" ] || log "Info" "${ignore_out_list} ignore transparent proxy."
+    fi
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    case "${proxy_mode}" in
+      blacklist|black)
+                # 修正 uid_list 文件读取
+                if [ -f "${uid_list}" ]; then
+                    if ! uid_content=$(cat "${uid_list}" 2>/dev/null) || [ -z "${uid_content}" ]; then
+          ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports "${redir_port}"
+                        [ ${network_mode} = "enhance" ] || log "Info" "Transparent proxy for all apps."
+        else
+                        echo "${uid_content}" | while read -r appid; do
+                            if [ -n "${appid}" ]; then
+            ${iptables} -t nat -A BOX_LOCAL -m owner --uid-owner "${appid}" -j RETURN
+                            fi
+                        done
+          ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports "${redir_port}"
+                        [ ${network_mode} = "enhance" ] || log "Info" "proxy mode: ${proxy_mode} (${packages_list}) no transparent proxy."
+        fi
+                else
+                    ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports "${redir_port}"
+                    log "Warning" "uid_list file not found, defaulting to global proxy"
+                fi
+
+                # 修正 gid_list 数组的使用
+                if [ -n "${gid_list}" ]; then
+                    for gid in ${gid_list}; do
+                        if [ -n "${gid}" ]; then
+            ${iptables} -t nat -A BOX_LOCAL -m owner --gid-owner ${gid} -j RETURN
+                        fi
+          done
+          [ ${network_mode} = "enhance" ] || {
+                        [ "${iptables}" = "$IPV" ] && log "Info" "proxy mode: ${proxy_mode}, GID (${gid_list}) no transparent proxy."
+          }
+        fi
+        ;;
+      whitelist|white)
+                # 修正 uid_list 文件读取
+                if [ -f "${uid_list}" ]; then
+                    if ! uid_content=$(cat "${uid_list}" 2>/dev/null) || [ -z "${uid_content}" ]; then
+          ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports "${redir_port}"
+                        [ ${network_mode} = "enhance" ] || log "Info" "Transparent proxy for all apps."
+        else
+                        echo "${uid_content}" | while read -r appid; do
+                            if [ -n "${appid}" ]; then
+            ${iptables} -t nat -A BOX_LOCAL -p tcp -m owner --uid-owner "${appid}" -j REDIRECT --to-ports "${redir_port}"
+                            fi
+                        done
+          ${iptables} -t nat -A BOX_LOCAL -p tcp -m owner --uid-owner 0 -j REDIRECT --to-ports "${redir_port}"
+          ${iptables} -t nat -A BOX_LOCAL -p tcp -m owner --uid-owner 1052 -j REDIRECT --to-ports "${redir_port}"
+                        [ ${network_mode} = "enhance" ] || log "Info" "proxy mode: ${proxy_mode} (${packages_list}) transparent proxy."
+        fi
+                fi
+
+                # 修正 gid_list 数组的使用
+                if [ -n "${gid_list}" ]; then
+                    for gid in ${gid_list}; do
+                        if [ -n "${gid}" ]; then
+                            ${iptables} -t nat -A BOX_LOCAL -p tcp -m owner --gid-owner ${gid} -j REDIRECT --to-ports "${redir_port}"
+                        fi
+          done
+                    [ ${network_mode} = "enhance" ] || [ "${iptables}" = "$IPV" ] && log "Info" "proxy mode: ${proxy_mode}, GID (${gid_list}) transparent proxy."
+        fi
+        ;;
+      *)
+                log "Warning" "proxy mode: ${proxy_mode} < error."
+        ${iptables} -t nat -A BOX_LOCAL -p tcp -j REDIRECT --to-ports "${redir_port}"
+                [ ${network_mode} = "enhance" ] || log "Info" "Transparent proxy for all apps."
+        ;;
+    esac
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -t nat -I OUTPUT -j BOX_LOCAL
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${redir_port}" -j REJECT
+  else
+    ${iptables} -A OUTPUT -d ::1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${redir_port}" -j REJECT
+  fi
+}
+
+
+
+stop_redirect() {
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -t nat -D PREROUTING -j BOX_EXTERNAL
+    ${iptables} -t nat -D OUTPUT -j BOX_LOCAL
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${redir_port}" -j REJECT
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0:3005 -m tcp --dport "${redir_port}" -j REJECT
+  else
+    ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${redir_port}" -j REJECT
+    ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner 0:3005 -m tcp --dport "${redir_port}" -j REJECT
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    # ${iptables} -t nat -D BOX_EXTERNAL -d "${fake_ip_range}" -p icmp -j DNAT --to-destination 127.0.0.1
+    # ${iptables} -t nat -D BOX_LOCAL -d "${fake_ip_range}" -p icmp -j DNAT --to-destination 127.0.0.1
+    ${iptables} -t nat -F BOX_EXTERNAL
+    ${iptables} -t nat -X BOX_EXTERNAL
+    ${iptables} -t nat -F BOX_LOCAL
+    ${iptables} -t nat -X BOX_LOCAL
+    ${iptables} -t nat -F LOCAL_IP_V4
+    ${iptables} -t nat -X LOCAL_IP_V4
+  fi
+}
+
+start_tproxy() {
+    log "DEBUG" "Starting tproxy setup"
+    
+  if [ "${iptables}" = "$IPV" ]; then
+    ip rule add fwmark "${fwmark}" table "${table}" pref "${pref}"
+    ip route add local default dev lo table "${table}"
+  else
+    ip -6 rule add fwmark "${fwmark}" table "${table}" pref "${pref}"
+    ip -6 route add local default dev lo table "${table}"
+  fi
+
+  ${iptables} -t mangle -N BOX_EXTERNAL 2>/dev/null
+  ${iptables} -t mangle -F BOX_EXTERNAL 2>/dev/null
+
+    if [ "${clash_dns_forward}" = "enable" ] && [[ "${Clash_bin_name}" == @(clash|mihomo) ]]; then
+      [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_EXTERNAL -p tcp --dport 53 -j RETURN
+      ${iptables} -t mangle -A BOX_EXTERNAL -p udp --dport 53 -j RETURN
+  else
+      [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_EXTERNAL -p tcp --dport 53 -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${fwmark}
+      ${iptables} -t mangle -A BOX_EXTERNAL -p udp --dport 53 -j TPROXY --on-port ${tproxy_port} --tproxy-mark ${fwmark}
+  fi
+ 
+  if [ "${iptables}" = "$IPV" ]; then
+        # 修正 intranet 数组的使用
+        if [ -n "${intranet}" ]; then
+            for subnet in ${intranet}; do
+                if [ -n "${subnet}" ]; then
+      ${iptables} -t mangle -A BOX_EXTERNAL -d ${subnet} -j RETURN
+                fi
+    done
+        fi
+    ${iptables} -t mangle -N LOCAL_IP_V4
+    ${iptables} -t mangle -F LOCAL_IP_V4
+    ${iptables} -t mangle -A BOX_EXTERNAL -j LOCAL_IP_V4
+  else
+        # 修正 intranet6 数组的使用
+        if [ -n "${intranet6}" ]; then
+            for subnet6 in ${intranet6}; do
+                if [ -n "${subnet6}" ]; then
+      ${iptables} -t mangle -A BOX_EXTERNAL -d ${subnet6} -j RETURN
+                fi
+    done
+        fi
+    ${iptables} -t mangle -N LOCAL_IP_V6
+    ${iptables} -t mangle -F LOCAL_IP_V6
+    ${iptables} -t mangle -A BOX_EXTERNAL -j LOCAL_IP_V6
+  fi
+
+  [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i lo -j TPROXY --on-port "${tproxy_port}" --tproxy-mark "${fwmark}"
+  ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i lo -j TPROXY --on-port "${tproxy_port}" --tproxy-mark "${fwmark}"
+
+    # 修正 ap_list 数组的使用
+    if [ -n "${ap_list}" ]; then
+        for ap in ${ap_list}; do
+            if [ -n "${ap}" ]; then
+      [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_EXTERNAL -p tcp -i "${ap}" -j TPROXY --on-port "${tproxy_port}" --tproxy-mark "${fwmark}"
+      ${iptables} -t mangle -A BOX_EXTERNAL -p udp -i "${ap}" -j TPROXY --on-port "${tproxy_port}" --tproxy-mark "${fwmark}"
+            fi
+    done
+        [ "${iptables}" = "$IPV" ] && log "Info" "${ap_list} transparent proxy."
+  fi
+
+  ${iptables} -t mangle -I PREROUTING -j BOX_EXTERNAL
+  ${iptables} -t mangle -N BOX_LOCAL
+  ${iptables} -t mangle -F BOX_LOCAL
+
+  ${iptables} -t mangle -A BOX_LOCAL -m owner --uid-owner ${box_user} --gid-owner ${box_group} -j RETURN
+
+    # 修正 ignore_out_list 数组的使用
+    if [ -n "${ignore_out_list}" ]; then
+        for ignore in ${ignore_out_list}; do
+            if [ -n "${ignore}" ]; then
+      ${iptables} -t mangle -A BOX_LOCAL -o "${ignore}" -j RETURN
+            fi
+    done
+        [ "${iptables}" = "$IPV" ] && log "Info" "${ignore_out_list} ignore transparent proxy."
+  fi
+
+    if [ "${clash_dns_forward}" = "enable" ] && [[ "${Clash_bin_name}" == @(clash|mihomo) ]]; then
+      [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp --dport 53 -j RETURN
+      ${iptables} -t mangle -A BOX_LOCAL -p udp --dport 53 -j RETURN
+  else
+      [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp --dport 53 -j MARK --set-xmark ${fwmark}
+      ${iptables} -t mangle -A BOX_LOCAL -p udp --dport 53 -j MARK --set-xmark ${fwmark}
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+        for subnet in ${intranet}; do
+            if [ -n "${subnet}" ]; then
+      ${iptables} -t mangle -A BOX_LOCAL -d ${subnet} -j RETURN
+            fi
+    done
+    ${iptables} -t mangle -A BOX_LOCAL -j LOCAL_IP_V4
+  else
+        for subnet6 in ${intranet6}; do
+            if [ -n "${subnet6}" ]; then
+      ${iptables} -t mangle -A BOX_LOCAL -d ${subnet6} -j RETURN
+            fi
+    done
+    ${iptables} -t mangle -A BOX_LOCAL -j LOCAL_IP_V6
+  fi
+
+  case "${proxy_mode}" in
+    blacklist|black)
+            if [ -f "${uid_list}" ]; then
+                if ! uid_content=$(cat "${uid_list}" 2>/dev/null) || [ -z "${uid_content}" ]; then
+        [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -j MARK --set-mark "${fwmark}"
+        ${iptables} -t mangle -A BOX_LOCAL -p udp -j MARK --set-mark "${fwmark}"
+                    [ "${iptables}" = "$IPV" ] && log "Info" "transparent proxy for all apps."
+      else
+                    echo "${uid_content}" | while read -r appid; do
+                        if [ -n "${appid}" ]; then
+          ${iptables} -t mangle -A BOX_LOCAL -m owner --uid-owner "${appid}" -j RETURN
+                        fi
+                    done
+        [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -j MARK --set-mark "${fwmark}"
+        ${iptables} -t mangle -A BOX_LOCAL -p udp -j MARK --set-mark "${fwmark}"
+                    [ "${iptables}" = "$IPV" ] && log "Info" "proxy mode: ${proxy_mode} (${packages_list}) no transparent proxy."
+      fi
+            fi
+
+            # 修正 gid_list 数组的使用
+            if [ -n "${gid_list}" ]; then
+                for gid in ${gid_list}; do
+                    if [ -n "${gid}" ]; then
+          ${iptables} -t mangle -A BOX_LOCAL -m owner --gid-owner ${gid} -j RETURN
+                    fi
+        done
+                [ "${iptables}" = "$IPV" ] && log "Info" "proxy mode: ${proxy_mode}, GID (${gid_list}) no transparent proxy."
+      fi
+      ;;
+    whitelist|white)
+            if [ -f "${uid_list}" ]; then
+                if ! uid_content=$(cat "${uid_list}" 2>/dev/null) || [ -z "${uid_content}" ]; then
+        [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -j MARK --set-mark "${fwmark}"
+        ${iptables} -t mangle -A BOX_LOCAL -p udp -j MARK --set-mark "${fwmark}"
+                    [ "${iptables}" = "$IPV" ] && log "Info" "transparent proxy for all apps."
+      else
+                    echo "${uid_content}" | while read -r appid; do
+                        if [ -n "${appid}" ]; then
+          [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -m owner --uid-owner "${appid}" -j MARK --set-mark "${fwmark}"
+          ${iptables} -t mangle -A BOX_LOCAL -p udp -m owner --uid-owner "${appid}" -j MARK --set-mark "${fwmark}"
+                        fi
+                    done
+        [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -m owner --uid-owner 0 -j MARK --set-mark "${fwmark}"
+        ${iptables} -t mangle -A BOX_LOCAL -p udp -m owner --uid-owner 0 -j MARK --set-mark "${fwmark}"
+        [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -m owner --uid-owner 1052 -j MARK --set-mark "${fwmark}"
+        ${iptables} -t mangle -A BOX_LOCAL -p udp -m owner --uid-owner 1052 -j MARK --set-mark "${fwmark}"
+                    [ "${iptables}" = "$IPV" ] && log "Info" "proxy mode: ${proxy_mode} (${packages_list}) transparent proxy."
+      fi
+            fi
+
+            # 修正 gid_list 数组的使用
+            if [ -n "${gid_list}" ]; then
+                for gid in ${gid_list}; do
+                    if [ -n "${gid}" ]; then
+          [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -m owner --gid-owner ${gid} -j MARK --set-mark "${fwmark}"
+          ${iptables} -t mangle -A BOX_LOCAL -p udp -m owner --gid-owner ${gid} -j MARK --set-mark "${fwmark}"
+                    fi
+        done
+                [ "${iptables}" = "$IPV" ] && log "Info" "proxy mode: ${proxy_mode}, GID (${gid_list}) transparent proxy."
+      fi
+      ;;
+    *)
+            log "Debug" "proxy mode: ${proxy_mode} < error"
+      [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -A BOX_LOCAL -p tcp -j MARK --set-mark "${fwmark}"
+      ${iptables} -t mangle -A BOX_LOCAL -p udp -j MARK --set-mark "${fwmark}"
+            [ "${iptables}" = "$IPV" ] && log "Info" "transparent proxy for all apps."
+      ;;
+    esac
+
+  ${iptables} -t mangle -I OUTPUT -j BOX_LOCAL
+
+  ${iptables} -t mangle -N DIVERT
+  ${iptables} -t mangle -F DIVERT
+  ${iptables} -t mangle -A DIVERT -j MARK --set-mark "${fwmark}"
+  ${iptables} -t mangle -A DIVERT -j ACCEPT
+  [ ${network_mode} = "enhance" ] || ${iptables} -t mangle -I PREROUTING -p tcp -m socket -j DIVERT
+
+  # Disable QUIC
+  if [ "${quic}" = "disable" ]; then
+    ${iptables} -A OUTPUT -p udp --dport 443 -j REJECT
+    ${iptables} -A OUTPUT -p udp --dport 80 -j REJECT
+        [ "${iptables}" = "$IPV" ] && log "Warning" "Disabling QUIC"
+  fi
+
+if [ ${network_mode} != "enhance" ]; then
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -A OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${tproxy_port}" -j REJECT
+  else
+    ${iptables} -A OUTPUT -d ::1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${tproxy_port}" -j REJECT
+  fi
+fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+        if [ "${clash_dns_forward}" = "enable" ] && [[ "${Clash_bin_name}" == @(clash|mihomo) ]]; then
+      ${iptables} -t nat -N CLASH_DNS_EXTERNAL
+      ${iptables} -t nat -F CLASH_DNS_EXTERNAL
+      ${iptables} -t nat -A CLASH_DNS_EXTERNAL -p udp --dport 53 -j REDIRECT --to-ports "${clash_dns_port}"
+      ${iptables} -t nat -I PREROUTING -j CLASH_DNS_EXTERNAL
+
+      ${iptables} -t nat -N CLASH_DNS_LOCAL
+      ${iptables} -t nat -F CLASH_DNS_LOCAL
+      ${iptables} -t nat -A CLASH_DNS_LOCAL -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -j RETURN
+      ${iptables} -t nat -A CLASH_DNS_LOCAL -p udp --dport 53 -j REDIRECT --to-ports "${clash_dns_port}"
+      ${iptables} -t nat -I OUTPUT -j CLASH_DNS_LOCAL
+    fi
+
+        if [[ "${Clash_bin_name}" == @(clash|mihomo) ]] && [ -n "${fake_ip_range}" ]; then
+        ${iptables} -t nat -I OUTPUT -d "${fake_ip_range}" -p icmp -j DNAT --to-destination 127.0.0.1
+        ${iptables} -t nat -I PREROUTING -d "${fake_ip_range}" -p icmp -j DNAT --to-destination 127.0.0.1
+    fi
+  fi
+}
+
+stop_tproxy() {
+  if [ "${iptables}" = "$IPV" ]; then
+    ip rule del fwmark "${fwmark}" table "${table}" pref "${pref}"
+    ip route del local default dev lo table "${table}"
+    ip route flush table "${table}"
+    ip rule del pref "${pref}"
+  else
+    ip -6 rule del fwmark "${fwmark}" table "${table}" pref "${pref}"
+    ip -6 route del local default dev lo table "${table}"
+    ip -6 route flush table "${table}"
+    ip -6 rule del pref "${pref}"
+  fi
+
+  ${iptables} -t mangle -D PREROUTING -j BOX_EXTERNAL
+  ${iptables} -t mangle -D PREROUTING -p tcp -m socket -j DIVERT
+
+  ${iptables} -t mangle -D OUTPUT -j BOX_LOCAL
+
+  ${iptables} -t mangle -D BOX_EXTERNAL -i rmnet_data+ -j RETURN
+  ${iptables} -t mangle -D BOX_EXTERNAL -i ccmni+ -j RETURN
+
+  ${iptables} -t mangle -F BOX_EXTERNAL
+  ${iptables} -t mangle -X BOX_EXTERNAL
+
+  ${iptables} -t mangle -F BOX_LOCAL
+  ${iptables} -t mangle -X BOX_LOCAL
+
+  ${IPV} -t mangle -F LOCAL_IP_V4
+  ${IPV} -t mangle -X LOCAL_IP_V4
+  ${IP6V} -t mangle -F LOCAL_IP_V6
+  ${IP6V} -t mangle -X LOCAL_IP_V6
+
+  ${iptables} -t mangle -F DIVERT
+  ${iptables} -t mangle -X DIVERT
+
+  # flush QUIC
+  ${iptables} -D OUTPUT -p udp -m multiport --dport 443,80 -j REJECT
+  ${iptables} -D OUTPUT -p udp --dport 443 -j REJECT
+  ${iptables} -D OUTPUT -p udp --dport 80 -j REJECT
+
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${tproxy_port}" -j REJECT
+    ${iptables} -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport "${tproxy_port}" -j REJECT
+  else
+    ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner "${box_user}" --gid-owner "${box_group}" -m tcp --dport "${tproxy_port}" -j REJECT
+    ${iptables} -D OUTPUT -d ::1 -p tcp -m owner --uid-owner 0 --gid-owner 3005 -m tcp --dport "${tproxy_port}" -j REJECT
+  fi
+
+  if [ "${iptables}" = "$IPV" ]; then
+    ${iptables} -t nat -D PREROUTING -j CLASH_DNS_EXTERNAL
+    ${iptables} -t nat -D OUTPUT -j CLASH_DNS_LOCAL
+    ${iptables} -t nat -F CLASH_DNS_EXTERNAL
+    ${iptables} -t nat -X CLASH_DNS_EXTERNAL
+    ${iptables} -t nat -F CLASH_DNS_LOCAL
+    ${iptables} -t nat -X CLASH_DNS_LOCAL
+
+    if [ -n "${fake_ip_range}" ]; then
+      ${iptables} -t nat -D OUTPUT -p icmp -d "${fake_ip_range}" -j DNAT --to-destination 127.0.0.1
+      ${iptables} -t nat -D PREROUTING -p icmp -d "${fake_ip_range}" -j DNAT --to-destination 127.0.0.1
+      ${iptables} -t nat -D OUTPUT -d "${fake_ip_range}" -p icmp -j DNAT --to-destination 127.0.0.1
+      ${iptables} -t nat -D PREROUTING -d "${fake_ip_range}" -p icmp -j DNAT --to-destination 127.0.0.1
+    fi
+  fi
+}
+
+cleanup_iptables() {
+    log "INFO" "Starting cleanup_iptables"
+    
+    # 先处理 IPv4
+    log "INFO" "Cleaning up IPv4 rules"
+    iptables="$IPV"
+    stop_redirect 2>/dev/null || true
+    log "INFO" "IPv4 stop_redirect completed"
+    stop_tproxy 2>/dev/null || true
+    log "INFO" "IPv4 stop_tproxy completed"
+    
+    # 清理转发规则
+    if [ -n "${tun_device}" ]; then
+        forward "-D" 2>/dev/null || true
+        log "INFO" "IPv4 forward rules cleaned"
+    fi
+
+    # 再处理 IPv6
+    if [ "${ipv6}" = "true" ]; then
+        log "INFO" "Cleaning up IPv6 rules"
+        iptables="$IP6V"
+        stop_redirect 2>/dev/null || true
+        log "INFO" "IPv6 stop_redirect completed"
+        stop_tproxy 2>/dev/null || true
+        log "INFO" "IPv6 stop_tproxy completed"
+        
+        # 清理转发规则
+        if [ -n "${tun_device}" ]; then
+            forward "-D" 2>/dev/null || true
+            log "INFO" "IPv6 forward rules cleaned"
+        fi
+        
+        # 清理 IPv6 DNS 规则
+        $IP6V -D OUTPUT -p udp --destination-port 53 -j DROP 2>/dev/null || true
+        log "INFO" "IPv6 DNS rules cleaned"
+    fi
+
+    log "INFO" "cleanup_iptables completed"
+    return 0
+}
+
+
+disable_ipv6() {
+  sysctl -w net.ipv4.ip_forward=1
+  sysctl -w net.ipv6.conf.all.forwarding=0
+
+  sysctl -w net.ipv6.conf.all.accept_ra=0
+  sysctl -w net.ipv6.conf.wlan0.accept_ra=0
+  sysctl -w net.ipv6.conf.all.disable_ipv6=1
+  sysctl -w net.ipv6.conf.default.disable_ipv6=1
+  sysctl -w net.ipv6.conf.wlan0.disable_ipv6=1
+
+  # add: block Askes ipv6 completely
+  ip -6 rule add unreachable pref "${pref}"
+} >> /dev/null 2>&1
+
+ipv6_enable() {
+    log "INFO" "Entering ipv6_enable"
+    
+    # 添加错误检查
+    if ! command -v sysctl >/dev/null 2>&1; then
+        log "ERROR" "sysctl command not found"
+        return 1
+    fi
+    
+    
+    sysctl -w net.ipv4.ip_forward=1 || log "WARN" "Failed to set ip_forward"
+    sysctl -w net.ipv6.conf.all.forwarding=1 || log "WARN" "Failed to set ipv6 forwarding"
+
+    sysctl -w net.ipv6.conf.all.accept_ra=2 || log "WARN" "Failed to set accept_ra"
+    sysctl -w net.ipv6.conf.wlan0.accept_ra=2 || log "WARN" "Failed to set wlan0 accept_ra"
+    sysctl -w net.ipv6.conf.all.disable_ipv6=0 || log "WARN" "Failed to enable ipv6"
+    sysctl -w net.ipv6.conf.default.disable_ipv6=0 || log "WARN" "Failed to enable default ipv6"
+    sysctl -w net.ipv6.conf.wlan0.disable_ipv6=0 || log "WARN" "Failed to enable wlan0 ipv6"
+
+    log "DEBUG" "Attempting to delete unreachable rule"
+    # 检查规则是否存在再删除
+    if ip -6 rule show | grep -q "unreachable.*pref.*${pref}"; then
+        ip -6 rule del unreachable pref "${pref}" || log "WARN" "Failed to delete unreachable rule"
+    fi
+
+    log "DEBUG" "Adding OUTPUT rule for UDP port 53"
+    # 添加 UDP 端口 53 的规则
+    $IP6V -A OUTPUT -p udp --destination-port 53 -j DROP || log "WARN" "Failed to add OUTPUT rule"
+
+    log "INFO" "IPv6 configuration completed"
+    return 0
+}
+    
+
+probe_user_group() {
+    log "enter probe_user_group"
+    
+    # 初始化默认值
+    : "${box_user_group:=nobody:3005}"
+    
+    if PID=$(${busybox_path} pidof ${Clash_bin_name}); then
+        if ! box_user=$(stat -c %U /proc/$PID 2>/dev/null); then
+            log "ERROR" "Failed to get user from PID: $PID"
+            box_user="nobody"
+        fi
+        if ! box_group=$(stat -c %G /proc/$PID 2>/dev/null); then
+            log "ERROR" "Failed to get group from PID: $PID"
+            box_group="3005"
+        fi
+        log "INFO" "Using process user:group - ${box_user}:${box_group}"
+        return 0
+    else
+        IFS=':' read -r box_user box_group <<< "${box_user_group}"
+        log "INFO" "Using default user:group - ${box_user}:${box_group}"
+        return 1
+    fi
+}
+    
+
+intranet=(
+  0.0.0.0/8
+  10.0.0.0/8
+  100.64.0.0/10
+  127.0.0.0/8
+  169.254.0.0/16
+  172.16.0.0/12
+  192.0.0.0/24
+  192.0.2.0/24
+  192.88.99.0/24
+  192.168.0.0/16
+  198.51.100.0/24
+  203.0.113.0/24
+  224.0.0.0/4
+  240.0.0.0/4
+  255.0.0.0/4
+  255.255.255.0/24
+  255.255.255.255/32
+)
+# The use of 100.0.0.0/8 instead of 100.64.0.0/10 is purely due to a mistake by China Telecom's service provider, and you can change it back.
+intranet+=($(ip -4 a | ${busybox_path} awk '/inet/ {print $2}' | ${busybox_path} grep -vE "^127.0.0.1"))
+
+intranet6=(
+  ::/128
+  ::1/128
+  ::ffff:0:0/96
+  100::/64
+  64:ff9b::/96
+  2001::/32
+  2001:10::/28
+  2001:20::/28
+  2001:db8::/32
+  2002::/16
+  fc00::/7
+  fe80::/10
+  ff00::/8
+)
+intranet6+=($(ip -6 a | ${busybox_path} awk '/inet6/ {print $2}' | ${busybox_path} grep -vE "^fe80|^::1|^fd00"))
+
+forward() {
+  local action=$1
+    if [ -z "${action}" ]; then
+        log "ERROR" "No action specified for forward"
+        return 1
+    fi
+
+    log "INFO" "Setting up forward rules with action: ${action}"
+    
+    # 基本转发规则
+    if [ -n "${tun_device}" ]; then
+        ${iptables} ${action} FORWARD -i "${tun_device}" -j ACCEPT 2>/dev/null || true
+        ${iptables} ${action} FORWARD -o "${tun_device}" -j ACCEPT 2>/dev/null || true
+        
+        if [ "${ipv6}" = "true" ]; then
+            ${ip6tables} ${action} FORWARD -i "${tun_device}" -j ACCEPT 2>/dev/null || true
+            ${ip6tables} ${action} FORWARD -o "${tun_device}" -j ACCEPT 2>/dev/null || true
+        fi
+    fi
+
+    # 系统设置
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1
+    sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1
+    
+    log "INFO" "Forward rules setup completed"
+    return 0
+} 2>/dev/null
+
+probe_tun_device() {
+  busybox ifconfig | grep -q "${tun_device}" || return 1
+}
+
+probe_tun_index() {
+  while [ ! -f "/data/misc/net/rt_tables" ]; do
+    sleep 1
+  done
+  while read -r index name; do
+    if [ "${name}" = "${tun_device}" ]; then
+      tun_table_index=${index}
+      return 0
+    fi
+  done < /data/misc/net/rt_tables
+  return 1
+}
+
+tun_forward_ip_rules() {
+  local action=$1
+  ipv4_rules=(
+    "iif lo goto 6000 pref 5000"
+    "iif ${tun_device} lookup main suppress_prefixlength 0 pref 5010"
+    "iif ${tun_device} goto 6000 pref 5020"
+    "from 10.0.0.0/8 lookup ${tun_table_index} pref 5030"
+    "from 172.16.0.0/12 lookup ${tun_table_index} pref 5040"
+    "from 192.168.0.0/16 lookup ${tun_table_index} pref 5050"
+    "nop pref 6000"
+  )
+  
+  ipv6_rules=(
+    "iif lo goto 6000 pref 5000"
+    "iif ${tun_device} lookup main suppress_prefixlength 0 pref 5010"
+    # "from 2001:db8::/32 lookup ${tun_table_index} pref 5030"
+    # "from fc00::/7 lookup ${tun_table_index} pref 5040"
+    # "from fd00::/8 lookup ${tun_table_index} pref 5050"
+    "iif ${tun_device} goto 6000 pref 5020"
+    "nop pref 6000"
+  )
+  
+  if [ "${iptables}" = "$IPV" ]; then
+    for rule in "${ipv4_rules[@]}"; do
+      ip -4 rule "${action}" ${rule}
+    done
+  else
+    for rule in "${ipv6_rules[@]}"; do
+      ip -6 rule "${action}" ${rule}
+    done
+  fi
+}
+
+tun_forward_ip_rules_del() {
+  for preff in 5000 5010 5020 5030 5040 5050 6000; do
+    ip -4 rule del pref $preff
+    ip -6 rule del pref $preff
+  done
+}
+
+sing_tun_ip_rules() {
+  ip -4 rule $1 from all iif ${tun_device} lookup main suppress_prefixlength 0 pref 8000
+  ip -4 rule $1 lookup main pref 7000
+
+  ip -6 rule $1 from all iif ${tun_device} lookup main suppress_prefixlength 0 pref 8000
+  ip -6 rule $1 lookup main pref 7000
+}
+
+# 主执行逻辑
+main() {
+    if [[ "${network_mode}" == @(mixed|tproxy|tun|redirect|enhance) ]]; then
+        case "$1" in
+            enable|renew)
+                config_info || exit 1
+                
+                case "${network_mode}" in
+                    tproxy)
+                        log "INFO" "Using Tproxy: tcp + udp"
+                        log "INFO" "Creating iptables transparent proxy rules for tproxy"
+                        manage_rules create && apply_rules
+                        ;;
+                    tun)
+                        log "INFO" "Using tun: tcp + udp"
+                        set_tun
+                        ;;
+                    mixed)
+                        log "INFO" "Using Mixed: tcp(redirect) + udp(tun)"
+                        handle_mixed_mode
+                        ;;
+                    redirect)
+                        #log "INFO" "Using Redirect: tcp + udp (direct)"
+                        redirect_network_mode
+                        ;;
+                    enhance)
+                        #log "INFO" "Using Enhance: tcp(redirect) + udp(tproxy)"
+                        enhance_network_mode
+                        ;;
+                esac
+                ;;
+            disable)
+                handle_disable
+                ;;
+            *)
+                show_usage
+                ;;
+        esac
+    else
+        log "ERROR" "Unknown network_mode: ${network_mode}"
+        exit 1
+    fi
+}
+
+# 执行主函数
+main "$@"

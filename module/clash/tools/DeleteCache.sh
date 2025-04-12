@@ -1,5 +1,5 @@
 #!/system/bin/sh
-. /data/clash/clash.config
+. /data/adb/clash/setting.ini
 rm -rf ${Clash_run_path}/ip.dat
 rm -rf ${Clash_run_path}/Google.dat
 echo "done."

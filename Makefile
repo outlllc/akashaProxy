@@ -1,4 +1,4 @@
-NAME=akashaProxy
+NAME=ClashforRoot
 BUILDTIME=$(shell date -u)
 BRANCH=$(shell cd Clash.Meta && git branch --show-current)
 ifeq ($(BRANCH),Alpha)
@@ -19,7 +19,6 @@ all: default \
 	build-webui pack
 
 pack:
-	echo "id=Clash_For_Magisk\nname=akashaProxy\nversion="$(shell git rev-parse --short HEAD)"\nversionCode="$(date +%s)"\nauthor=heinu\ndescription=akasha terminal transparent proxy module that supports tproxy and tun and adds many easy-to-use features. Compatible with Magisk/KernelSU">module/module.prop
 	cd module && zip -r ../$(NAME).zip *
 
 default:
